@@ -27,82 +27,226 @@ STATIC_DIR = Path(__file__).parent
 HERMES_VENV = "/usr/local/lib/hermes-agent/venv/bin/python3"
 RUNNER = STATIC_DIR / "hermes_runner.py"
 
-# ── Persistent Hermes runner ──
-_runner_proc: subprocess.Popen | None = None
-_runner_lock = threading.Lock()
-_runner_busy = False  # True while a message is being processed
+# ── Runner pool (one subprocess per tab) ──
+import uuid as _uuid
 
 
-def start_runner():
-    """Start the persistent hermes_runner.py subprocess."""
-    global _runner_proc
-    _runner_proc = subprocess.Popen(
-        [HERMES_VENV, str(RUNNER)],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env={**os.environ, "TERM": "xterm-256color", "PYTHONUNBUFFERED": "1"},
-        text=True,
-    )
-    sys.stderr.write(f"[hermes-web] runner started pid={_runner_proc.pid}\n")
+class RunnerPool:
+    """Manages multiple hermes_runner.py subprocesses, one per tab."""
 
+    REASONING_LEVELS = ["none", "minimal", "low", "medium", "high", "maximum"]
 
-def call_runner(message: str) -> dict:
-    """Send a message to the runner and read the response.
+    def __init__(self):
+        self._runners: dict[str, subprocess.Popen] = {}
+        self._locks: dict[str, threading.Lock] = {}
+        self._busy: dict[str, bool] = {}
+        self._reasoning: dict[str, str] = {}
+        self._session_ids: dict[str, str] = {}
 
-    Thread-safe. Sets _runner_busy while processing.
-    Returns dict with 'content' and 'session_id'.
-    """
-    global _runner_proc, _runner_busy
-    _runner_busy = True
-    with _runner_lock:
-        try:
-            if _runner_proc is None or _runner_proc.poll() is not None:
-                start_runner()
+    def start(self, tab_id: str) -> None:
+        """Spawn a hermes_runner.py subprocess for *tab_id*."""
+        if tab_id in self._runners and self._runners[tab_id].poll() is None:
+            return  # already running
+        proc = subprocess.Popen(
+            [HERMES_VENV, str(RUNNER)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env={**os.environ, "TERM": "xterm-256color", "PYTHONUNBUFFERED": "1"},
+            text=True,
+        )
+        self._runners[tab_id] = proc
+        self._locks[tab_id] = threading.Lock()
+        self._busy[tab_id] = False
+        # Default reasoning from config or "medium"
+        self._reasoning[tab_id] = "medium"
+        sys.stderr.write(f"[hermes-web] runner started tab={tab_id} pid={proc.pid}\n")
 
-            # Write message
-            _runner_proc.stdin.write(message + "\n")
-            _runner_proc.stdin.flush()
+    def call(self, tab_id: str, message: str) -> dict:
+        """Send a message to the runner for *tab_id* and read the response.
 
-            # Read response (one JSON line)
-            line = _runner_proc.stdout.readline()
-            if not line:
-                raise RuntimeError("runner closed stdout")
-
-            return json.loads(line.strip())
-        except Exception as e:
-            # Restart on error
-            sys.stderr.write(f"[hermes-web] runner error: {e}, restarting...\n")
+        Thread-safe per-tab. Restarts the runner on crash.
+        Includes the tab's reasoning level in the JSON sent to the runner.
+        """
+        self._busy[tab_id] = True
+        lock = self._locks[tab_id]
+        with lock:
             try:
-                _runner_proc.terminate()
-                _runner_proc.wait(timeout=5)
+                proc = self._runners.get(tab_id)
+                if proc is None or proc.poll() is not None:
+                    self.start(tab_id)
+                    proc = self._runners[tab_id]
+
+                # Send JSON with reasoning level
+                payload = json.dumps({"text": message, "reasoning": self._reasoning.get(tab_id, "medium")})
+                proc.stdin.write(payload + "\n")
+                proc.stdin.flush()
+
+                line = proc.stdout.readline()
+                if not line:
+                    raise RuntimeError(f"runner tab={tab_id} closed stdout")
+
+                result = json.loads(line.strip())
+                # Track session_id for conversation history recovery
+                if result.get("session_id"):
+                    self._session_ids[tab_id] = result["session_id"]
+                return result
+            except Exception as e:
+                sys.stderr.write(f"[hermes-web] runner error tab={tab_id}: {e}, restarting...\n")
+                self._close(tab_id)
+                self.start(tab_id)
+                return {"content": f"Runner error: {e}", "session_id": ""}
+            finally:
+                self._busy[tab_id] = False
+
+    def close(self, tab_id: str) -> None:
+        """Terminate the runner for *tab_id* and remove it from the pool."""
+        self._close(tab_id)
+        self._runners.pop(tab_id, None)
+        self._locks.pop(tab_id, None)
+        self._busy.pop(tab_id, None)
+        self._reasoning.pop(tab_id, None)
+        self._session_ids.pop(tab_id, None)
+
+    def set_reasoning(self, tab_id: str, level: str) -> bool:
+        """Set reasoning level for *tab_id*. Returns True if valid."""
+        if level not in self.REASONING_LEVELS:
+            return False
+        self._reasoning[tab_id] = level
+        return True
+
+    def get_reasoning(self, tab_id: str) -> str | None:
+        return self._reasoning.get(tab_id)
+
+    def _close(self, tab_id: str) -> None:
+        proc = self._runners.get(tab_id)
+        if proc:
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
             except Exception:
-                pass
-            start_runner()
-            return {"content": f"Runner error: {e}", "session_id": ""}
-        finally:
-            _runner_busy = False
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+
+    def close_all(self) -> None:
+        for tid in list(self._runners.keys()):
+            self.close(tid)
+
+    def list(self) -> list[dict]:
+        """Return list of active tab info, including session messages if available."""
+        tabs = []
+        for tid, proc in self._runners.items():
+            tab_info = {
+                "tab_id": tid,
+                "alive": proc.poll() is None,
+                "busy": self._busy.get(tid, False),
+                "reasoning": self._reasoning.get(tid, "medium"),
+            }
+            # Load session messages from state.db for conversation recovery
+            sid = self._session_ids.get(tid)
+            if sid:
+                tab_info["session_id"] = sid
+                try:
+                    db = HERMES_HOME / "state.db"
+                    if db.exists():
+                        conn = sqlite3.connect(str(db))
+                        cur = conn.execute(
+                            "SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC LIMIT 50",
+                            (sid,),
+                        )
+                        msgs = [
+                            {"role": r, "content": c or ""}
+                            for r, c in cur.fetchall()
+                            if r in ("user", "assistant")
+                        ]
+                        conn.close()
+                        if msgs:
+                            tab_info["messages"] = msgs
+                except Exception:
+                    pass
+            tabs.append(tab_info)
+        return tabs
+
+    def any_busy(self) -> bool:
+        return any(self._busy.values())
 
 
-# ── WebSocket handler ──
+_pool = RunnerPool()
+
+
+# ── WebSocket handler (multiplexed by tab_id) ──
 async def ws_handler(websocket):
-    """Handle a WebSocket connection: user messages → runner → response.
+    """Handle a WebSocket connection with per-tab routing.
 
-    Sends a `{"type":"thinking"}` signal immediately on receipt so the
-    frontend can animate a typing indicator before the response arrives.
+    Messages are JSON:
+      {text: "...", tab_id: "..."}         → process on that tab's runner
+      {action: "new_tab", tab_id: "..."}   → spawn a runner for this tab
+      {action: "close_tab", tab_id: "..."} → kill the runner for this tab
+      {action: "get_tabs"}                 → list active tab info
+      {action: "set_reasoning", tab_id: "..", level: "medium"} → set reasoning
     """
     try:
-        async for msg in websocket:
-            # Signal thinking immediately
-            await websocket.send(json.dumps({"type": "thinking"}))
+        async for raw in websocket:
+            # Parse incoming message
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                # Legacy plain-text fallback — treat as message on auto-tab
+                tab_id = "default"
+                if tab_id not in _pool._runners:
+                    _pool.start(tab_id)
+                await websocket.send(json.dumps({"type": "thinking", "tab_id": tab_id}))
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, _pool.call, tab_id, raw
+                )
+                content = result.get("content", "")
+                if content:
+                    await websocket.send(json.dumps({"type": "response", "content": content, "tab_id": tab_id}))
+                continue
 
-            # Process (blocks until runner responds)
-            result = await asyncio.get_event_loop().run_in_executor(
-                None, call_runner, msg
-            )
-            content = result.get("content", "")
-            if content:
-                await websocket.send(json.dumps({"type": "response", "content": content}))
+            action = data.get("action")
+            tab_id = data.get("tab_id", "default")
+
+            if action == "new_tab":
+                _pool.start(tab_id)
+                await websocket.send(json.dumps({"type": "tab_created", "tab_id": tab_id}))
+
+            elif action == "close_tab":
+                _pool.close(tab_id)
+                await websocket.send(json.dumps({"type": "tab_closed", "tab_id": tab_id}))
+
+            elif action == "get_tabs":
+                tabs = _pool.list()
+                await websocket.send(json.dumps({"type": "tabs", "tabs": tabs}))
+
+            elif action == "set_reasoning":
+                level = data.get("level", "medium")
+                ok = _pool.set_reasoning(tab_id, level)
+                await websocket.send(json.dumps({
+                    "type": "reasoning_set",
+                    "tab_id": tab_id,
+                    "level": level if ok else None,
+                    "ok": ok,
+                }))
+
+            elif action == "reset_tab":
+                # Kill the runner and start fresh for the same tab
+                _pool.close(tab_id)
+                _pool.start(tab_id)
+                await websocket.send(json.dumps({"type": "tab_reset", "tab_id": tab_id}))
+
+            elif data.get("text") is not None:
+                # Normal message — process on the given tab's runner
+                text = data["text"]
+                await websocket.send(json.dumps({"type": "thinking", "tab_id": tab_id}))
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, _pool.call, tab_id, text
+                )
+                content = result.get("content", "")
+                if content:
+                    await websocket.send(json.dumps({"type": "response", "content": content, "tab_id": tab_id}))
     except websockets.exceptions.ConnectionClosed:
         pass
 
@@ -174,9 +318,9 @@ class Handler(SimpleHTTPRequestHandler):
 
         elif path == "/api/status":
             self._send_json({
-                "busy": _runner_busy,
-                "alive": _runner_proc is not None and _runner_proc.poll() is None,
-                "runner_pid": _runner_proc.pid if _runner_proc and _runner_proc.poll() is None else None,
+                "busy": _pool.any_busy(),
+                "alive": len(_pool.list()) > 0 and any(t["alive"] for t in _pool.list()),
+                "tabs": _pool.list(),
             })
 
         elif path == "/api/system":
@@ -457,8 +601,6 @@ class Handler(SimpleHTTPRequestHandler):
 
 # ── Boot ──
 def main():
-    start_runner()
-
     # WebSocket server (asyncio, background thread)
     async def ws_main():
         async with ws_serve(ws_handler, "127.0.0.1", WS_PORT):
@@ -481,12 +623,7 @@ def main():
     except KeyboardInterrupt:
         print("\nshutdown")
         httpd.server_close()
-        if _runner_proc:
-            _runner_proc.terminate()
-            try:
-                _runner_proc.wait(timeout=3)
-            except Exception:
-                _runner_proc.kill()
+        _pool.close_all()
 
 
 if __name__ == "__main__":

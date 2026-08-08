@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Hermes persistent runner.
 
-Reads messages (one per line) from stdin, runs `hermes chat -q --resume`,
-and writes JSON responses to stdout. Stays alive between calls so the
-Python/toolchain cache stays hot.
+Reads messages (one JSON line per message) from stdin, runs
+`hermes chat -q --resume`, and writes JSON responses to stdout.
+Stays alive between calls so the Python/toolchain cache stays hot.
 
 Protocol:
-  stdin:  one message per line
+  stdin:  JSON line: {"text": "...", "reasoning": "medium"}  (reasoning optional)
+          Plain text fallback: just a string (no reasoning override)
   stdout: one JSON line per response: {"content":"...","session_id":"..."}
 """
 
@@ -16,11 +17,12 @@ import re
 import subprocess
 import sys
 
+REASONING_LEVELS = {"none", "minimal", "low", "medium", "high", "maximum"}
 HERMES_VENV = "/usr/local/lib/hermes-agent/venv/bin/python3"
 ENV = {**os.environ, "TERM": "xterm-256color"}
 
 
-def run_hermes(query: str, sid: str | None) -> dict:
+def run_hermes(query: str, sid: str | None, reasoning: str | None = None) -> dict:
     """Run `hermes chat -q` and return parsed result."""
     cmd = [
         HERMES_VENV, "-m", "hermes_cli.main",
@@ -29,6 +31,8 @@ def run_hermes(query: str, sid: str | None) -> dict:
     ]
     if sid:
         cmd += ["--resume", sid]
+    if reasoning and reasoning in REASONING_LEVELS:
+        cmd += ["--reasoning", reasoning]
 
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=ENV)
@@ -59,7 +63,18 @@ def main():
         if not line:
             continue
 
-        result = run_hermes(line, sid)
+        # Parse JSON or fall back to plain text
+        text = line
+        reasoning = None
+        try:
+            data = json.loads(line)
+            if isinstance(data, dict):
+                text = data.get("text", line)
+                reasoning = data.get("reasoning")
+        except json.JSONDecodeError:
+            pass  # plain text fallback
+
+        result = run_hermes(text, sid, reasoning=reasoning)
         if result.get("session_id"):
             sid = result["session_id"]
 
