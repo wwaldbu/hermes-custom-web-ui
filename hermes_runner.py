@@ -1,29 +1,41 @@
 #!/usr/bin/env python3
-"""Hermes persistent runner.
+"""Hermes persistent runner with PTY streaming.
 
-Reads messages (one JSON line per message) from stdin, runs
-`hermes chat -q --resume`, and writes JSON responses to stdout.
-Stays alive between calls so the Python/toolchain cache stays hot.
+Reads one JSON message per line from stdin, runs `hermes chat -q --resume`
+with a pseudo-terminal so output streams in real time, and writes JSON
+lines to stdout per chunk. Keeps the runner alive between calls so the
+Python/toolchain cache stays hot.
 
-Protocol:
-  stdin:  JSON line: {"text": "...", "reasoning": "medium"}  (reasoning optional)
-          Plain text fallback: just a string (no reasoning override)
-  stdout: one JSON line per response: {"content":"...","session_id":"..."}
+Protocol (stdin → one JSON line):
+  {"text": "...", "reasoning": "medium"}   (reasoning optional)
+
+Protocol (stdout → multiple JSON lines per message):
+  {"type": "token", "content": "partial..."}    (zero or more)
+  {"type": "done", "content": "full...", "session_id": "..."}
 """
 
 import json
 import os
+import pty
 import re
+import select
+import signal
 import subprocess
 import sys
+import time
 
 REASONING_LEVELS = {"none", "minimal", "low", "medium", "high", "maximum"}
 HERMES_VENV = "/usr/local/lib/hermes-agent/venv/bin/python3"
-ENV = {**os.environ, "TERM": "xterm-256color"}
+STREAM_TIMEOUT = 600  # seconds before we kill hung processes
 
 
-def run_hermes(query: str, sid: str | None, reasoning: str | None = None) -> dict:
-    """Run `hermes chat -q` and return parsed result."""
+def run_hermes_stream(query: str, sid: str | None, reasoning: str | None = None):
+    """Run `hermes chat -q` with a PTY, yielding chunks as they arrive.
+
+    Yields:
+      ("token", chunk_text) for each readable chunk from the subprocess.
+      ("done", full_text, session_id) once the process exits.
+    """
     cmd = [
         HERMES_VENV, "-m", "hermes_cli.main",
         "chat", "-q", query,
@@ -34,26 +46,95 @@ def run_hermes(query: str, sid: str | None, reasoning: str | None = None) -> dic
     if reasoning and reasoning in REASONING_LEVELS:
         cmd += ["--reasoning", reasoning]
 
+    # ── PTY setup ──
+    master_fd, slave_fd = pty.openpty()
+    env = {**os.environ, "TERM": "xterm-256color"}
+
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=slave_fd,
+        stderr=subprocess.PIPE,  # captured separately for session_id
+        env=env,
+        text=True,
+        close_fds=True,
+    )
+    os.close(slave_fd)
+    proc.stdin.close()  # no input to the subprocess itself
+
+    # ── Streaming read loop ──
+    full_output: list[str] = []
+    deadline = time.monotonic() + STREAM_TIMEOUT
+
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=ENV)
-    except subprocess.TimeoutExpired:
-        return {"content": "Request timed out after 5 minutes.", "session_id": sid or ""}
-    except Exception as e:
-        return {"content": f"Agent error: {e}", "session_id": sid or ""}
+        while True:
+            # Check timeout
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                os.kill(proc.pid, signal.SIGTERM)
+                yield "token", "\n\n[Agent timed out after 10 minutes]"
+                break
 
-    stdout = (proc.stdout or "").strip()
-    stderr = proc.stderr or ""
+            r, _, _ = select.select([master_fd], [], [], min(remaining, 1.0))
+            if r:
+                try:
+                    chunk = os.read(master_fd, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                text = chunk.decode("utf-8", errors="replace")
+                full_output.append(text)
+                stripped = text.strip()
+                if stripped:
+                    yield "token", text
 
-    # Extract new session ID from stderr
+            # If process exited, drain any remaining data from the PTY
+            if proc.poll() is not None:
+                try:
+                    while True:
+                        chunk = os.read(master_fd, 4096)
+                        if not chunk:
+                            break
+                        text = chunk.decode("utf-8", errors="replace")
+                        full_output.append(text)
+                        if text.strip():
+                            yield "token", text
+                except OSError:
+                    pass
+                break
+    finally:
+        # Clean up
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            try:
+                proc.kill()
+                proc.wait(timeout=3)
+            except Exception:
+                pass
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+
+    # Read stderr to extract session_id
+    stderr_text = ""
+    try:
+        stderr_text = (proc.stderr or "").read() if proc.stderr else ""
+    except Exception:
+        pass
+
     new_sid = sid
-    m = re.search(r"session_id:\s*(\S+)", stderr)
+    m = re.search(r"session_id:\s*(\S+)", stderr_text)
     if m:
         new_sid = m.group(1)
 
-    if not stdout and proc.returncode != 0:
-        stdout = f"Agent exited ({proc.returncode})"
+    full_text = "".join(full_output).strip()
+    if not full_text and proc.returncode and proc.returncode != 0:
+        full_text = f"Agent exited ({proc.returncode})"
 
-    return {"content": stdout or "(no response)", "session_id": new_sid or ""}
+    yield "done", full_text or "(no response)", new_sid or ""
 
 
 def main():
@@ -72,13 +153,17 @@ def main():
                 text = data.get("text", line)
                 reasoning = data.get("reasoning")
         except json.JSONDecodeError:
-            pass  # plain text fallback
+            pass
 
-        result = run_hermes(text, sid, reasoning=reasoning)
-        if result.get("session_id"):
-            sid = result["session_id"]
-
-        print(json.dumps(result), flush=True)
+        # Stream tokens
+        for event in run_hermes_stream(text, sid, reasoning=reasoning):
+            if event[0] == "token":
+                print(json.dumps({"type": "token", "content": event[1]}), flush=True)
+            elif event[0] == "done":
+                _content, _sid = event[1], event[2]
+                if _sid:
+                    sid = _sid
+                print(json.dumps({"type": "done", "content": _content, "session_id": _sid}), flush=True)
 
 
 if __name__ == "__main__":

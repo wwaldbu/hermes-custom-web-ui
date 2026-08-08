@@ -704,6 +704,36 @@ function connectWs() {
       return;
     }
 
+    // ── Token (streaming) ──
+    if (data.type === 'token') {
+      if (tabId && TABS[tabId]) {
+        TABS[tabId].typing = false;
+        const ti = TABS[tabId].messagesEl.querySelector('.typing');
+        if (ti) ti.remove();
+
+        const chunk = data.content || '';
+        if (!chunk.trim()) {
+          if (tabId === activeTabId) { scrollBottom(tabId); }
+          return;
+        }
+
+        const lastMsg = TABS[tabId].messagesEl.lastElementChild;
+        if (lastMsg && lastMsg.classList.contains('msg-assistant-stream')) {
+          lastMsg.textContent += chunk;
+        } else {
+          const d = document.createElement('div');
+          d.className = 'msg msg-assistant msg-assistant-stream';
+          d.textContent = chunk;
+          TABS[tabId].messagesEl.appendChild(d);
+        }
+        if (tabId === activeTabId) {
+          renderTabBar();
+          scrollBottom(tabId);
+        }
+      }
+      return;
+    }
+
     // ── Response ──
     if (data.type === 'response') {
       if (tabId && TABS[tabId]) {
@@ -717,9 +747,10 @@ function connectWs() {
           return;
         }
 
+        // Replace streaming content with the clean full response
         const lastMsg = TABS[tabId].messagesEl.lastElementChild;
         if (lastMsg && lastMsg.classList.contains('msg-assistant-stream')) {
-          lastMsg.textContent += clean;
+          lastMsg.textContent = clean;
         } else {
           const d = document.createElement('div');
           d.className = 'msg msg-assistant msg-assistant-stream';

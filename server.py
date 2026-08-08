@@ -119,6 +119,48 @@ class RunnerPool:
     def get_reasoning(self, tab_id: str) -> str | None:
         return self._reasoning.get(tab_id)
 
+    def call_stream(self, tab_id: str, message: str, on_token, on_done):
+        """Send a message to the runner for *tab_id* and stream tokens.
+
+        Thread-safe per-tab. Restarts the runner on crash.
+        on_token(content: str) is called for each token chunk.
+        on_done(result: dict) is called when the response is complete.
+        """
+        self._busy[tab_id] = True
+        lock = self._locks[tab_id]
+        with lock:
+            try:
+                proc = self._runners.get(tab_id)
+                if proc is None or proc.poll() is not None:
+                    self.start(tab_id)
+                    proc = self._runners[tab_id]
+
+                payload = json.dumps({"text": message, "reasoning": self._reasoning.get(tab_id, "medium")})
+                proc.stdin.write(payload + "\n")
+                proc.stdin.flush()
+
+                while True:
+                    line = proc.stdout.readline()
+                    if not line:
+                        break
+                    data = json.loads(line.strip())
+                    if data.get("type") == "done":
+                        if data.get("session_id"):
+                            self._session_ids[tab_id] = data["session_id"]
+                        on_done(data)
+                        return
+                    elif data.get("type") == "token":
+                        on_token(data.get("content", ""))
+
+                raise RuntimeError(f"runner tab={tab_id} closed stdout without done signal")
+            except Exception as e:
+                sys.stderr.write(f"[hermes-web] runner error tab={tab_id}: {e}\n")
+                self._close(tab_id)
+                self.start(tab_id)
+                on_done({"content": f"Runner error: {e}", "session_id": ""})
+            finally:
+                self._busy[tab_id] = False
+
     def _close(self, tab_id: str) -> None:
         proc = self._runners.get(tab_id)
         if proc:
@@ -199,12 +241,22 @@ async def ws_handler(websocket):
                 if tab_id not in _pool._runners:
                     _pool.start(tab_id)
                 await websocket.send(json.dumps({"type": "thinking", "tab_id": tab_id}))
-                result = await asyncio.get_event_loop().run_in_executor(
-                    None, _pool.call, tab_id, raw
+
+                q2 = asyncio.Queue()
+                def tk2(c): q2.put_nowait({"type": "token", "content": c, "tab_id": tab_id})
+                def dd2(r): q2.put_nowait({"type": "_done", "result": r, "tab_id": tab_id})
+                asyncio.get_event_loop().run_in_executor(
+                    None, _pool.call_stream, tab_id, raw, tk2, dd2
                 )
-                content = result.get("content", "")
-                if content:
-                    await websocket.send(json.dumps({"type": "response", "content": content, "tab_id": tab_id}))
+                while True:
+                    m2 = await q2.get()
+                    if m2["type"] == "_done":
+                        c2 = m2["result"].get("content", "")
+                        if c2:
+                            await websocket.send(json.dumps({"type": "response", "content": c2, "tab_id": tab_id}))
+                        break
+                    elif m2["type"] == "token":
+                        await websocket.send(json.dumps(m2))
                 continue
 
             action = data.get("action")
@@ -239,15 +291,31 @@ async def ws_handler(websocket):
                 await websocket.send(json.dumps({"type": "tab_reset", "tab_id": tab_id}))
 
             elif data.get("text") is not None:
-                # Normal message — process on the given tab's runner
+                # Normal message — stream tokens via the runner
                 text = data["text"]
                 await websocket.send(json.dumps({"type": "thinking", "tab_id": tab_id}))
-                result = await asyncio.get_event_loop().run_in_executor(
-                    None, _pool.call, tab_id, text
+
+                queue = asyncio.Queue()
+
+                def on_token(content):
+                    queue.put_nowait({"type": "token", "content": content, "tab_id": tab_id})
+
+                def on_done(result):
+                    queue.put_nowait({"type": "_done", "result": result, "tab_id": tab_id})
+
+                asyncio.get_event_loop().run_in_executor(
+                    None, _pool.call_stream, tab_id, text, on_token, on_done
                 )
-                content = result.get("content", "")
-                if content:
-                    await websocket.send(json.dumps({"type": "response", "content": content, "tab_id": tab_id}))
+
+                while True:
+                    msg = await queue.get()
+                    if msg["type"] == "_done":
+                        content = msg["result"].get("content", "")
+                        if content:
+                            await websocket.send(json.dumps({"type": "response", "content": content, "tab_id": tab_id}))
+                        break
+                    elif msg["type"] == "token":
+                        await websocket.send(json.dumps(msg))
     except websockets.exceptions.ConnectionClosed:
         pass
 
