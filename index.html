@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
+<title>Hermes — Dashboard</title>
+<style>
+  :root {
+    --bg: #0b0b12;
+    --surface: rgba(19, 19, 30, 0.85);
+    --surface2: rgba(26, 26, 40, 0.7);
+    --border: rgba(37, 37, 53, 0.6);
+    --border-light: rgba(37, 37, 53, 0.3);
+    --gold: #d4a843;
+    --gold-dim: #8a6a20;
+    --gold-glow: rgba(212, 168, 67, 0.08);
+    --green: #50c878;
+    --green-dim: #2a6e3e;
+    --red: #ff5c5c;
+    --cyan: #5cd8ff;
+    --text: #d0d0da;
+    --text-dim: #6a6a7e;
+    --text-bright: #f0f0f8;
+    --font-mono: 'SF Mono','Fira Code','Cascadia Code','JetBrains Mono','Consolas',monospace;
+    --font-ui: -apple-system,'SF Pro','Inter','Segoe UI',system-ui,sans-serif;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --sidebar-w: 200px;
+  }
+  * { margin:0; padding:0; box-sizing:border-box }
+  html,body { height:100%; overflow:hidden }
+  body {
+    background:var(--bg); color:var(--text); font-family:var(--font-ui);
+    display:flex; flex-direction:column; height:100dvh;
+    -webkit-font-smoothing:antialiased;
+  }
+  body::before {
+    content:''; position:fixed; inset:0; pointer-events:none;
+    background-image:
+      radial-gradient(ellipse at 20% 50%, rgba(212,168,67,0.04) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 20%, rgba(92,216,255,0.03) 0%, transparent 50%),
+      repeating-linear-gradient(0deg, transparent, transparent 39px, rgba(255,255,255,0.02) 39px, rgba(255,255,255,0.02) 40px),
+      repeating-linear-gradient(90deg, transparent, transparent 39px, rgba(255,255,255,0.02) 39px, rgba(255,255,255,0.02) 40px);
+    z-index:0;
+  }
+  .app { display:flex; height:100%; overflow:hidden; position:relative; z-index:1; }
+  .sidebar {
+    width:var(--sidebar-w); background:rgba(19, 19, 30, 0.7);
+    border-right:1px solid var(--border); display:flex;
+    flex-direction:column; flex-shrink:0; backdrop-filter:blur(16px);
+    -webkit-backdrop-filter:blur(16px);
+    transition:transform .3s ease;
+  }
+  .sidebar .brand {
+    padding:16px 18px; border-bottom:1px solid var(--border-light);
+    display:flex; align-items:center; gap:10px; min-height:54px;
+  }
+  .sidebar .brand .dot {
+    width:8px; height:8px; border-radius:50%; background:var(--gold);
+    flex-shrink:0; box-shadow: 0 0 8px var(--gold-dim);
+  }
+  .sidebar .brand h1 { font-size:15px; font-weight:600; color:var(--text-bright); font-family:var(--font-mono); letter-spacing:-0.3px; }
+  .sidebar nav { flex:1; padding:10px; overflow-y:auto; }
+  .sidebar nav .nav-item {
+    display:flex; align-items:center; gap:10px;
+    padding:10px 12px; border-radius:var(--radius-sm);
+    cursor:pointer; user-select:none; font-size:13px; color:var(--text-dim);
+    transition:all .2s; margin-bottom:2px; font-weight:450;
+  }
+  .sidebar nav .nav-item:hover { background:rgba(255,255,255,0.04); color:var(--text); }
+  .sidebar nav .nav-item.active { background:var(--gold-glow); color:var(--gold); border:1px solid rgba(212,168,67,0.15); }
+  .sidebar nav .nav-item .icon { font-size:15px; width:20px; text-align:center; flex-shrink:0; opacity:0.7; }
+  .sidebar nav .nav-item.active .icon { opacity:1; }
+  .sidebar .sidebar-footer {
+    padding:12px 18px; border-top:1px solid var(--border-light);
+    font-size:11px; color:var(--text-dim); text-align:center;
+    font-family:var(--font-mono); opacity:0.5;
+  }
+  .main {
+    flex:1; display:flex; flex-direction:column; overflow:hidden;
+    min-width:0; padding-bottom:0;
+  }
+  .main-header {
+    background:rgba(19, 19, 30, 0.6);
+    border-bottom:1px solid var(--border); min-height:54px;
+    padding:0 20px; display:flex; align-items:center; gap:12px;
+    flex-shrink:0; backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px);
+  }
+  .main-header .menu-btn { display:none; background:none; border:none; color:var(--text); font-size:20px; cursor:pointer; padding:4px; }
+  .main-header .view-title { font-size:14px; font-weight:500; color:var(--text-dim); letter-spacing:0.3px; }
+  .main-header .view-title span { color:var(--text-bright); font-weight:600; }
+  .main-header .model-tag { margin-left:auto; font-size:11px; color:var(--text-dim); font-family:var(--font-mono); display:flex; align-items:center; gap:8px; }
+  .main-header .model-tag .conn-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; transition:background .3s, box-shadow .3s; }
+  .conn-connected { background:var(--green); box-shadow:0 0 6px rgba(80,200,120,0.4); }
+  .conn-connecting { background:var(--gold); box-shadow:0 0 6px rgba(212,168,67,0.4); animation:pulse 1.2s ease-in-out infinite; }
+  .conn-disconnected { background:var(--red); box-shadow:0 0 6px rgba(255,92,92,0.4); }
+  @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:0.5 } }
+  .content { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+  .dashboard-home { flex:1; overflow-y:auto; padding:0; max-width:820px; margin:0 auto; width:100%; }
+  .dashboard-home h2 { font-size:20px; font-weight:600; color:var(--text-bright); margin-bottom:2px; letter-spacing:-0.3px; }
+  .dashboard-home .subtitle { font-size:13px; color:var(--text-dim); font-weight:400; }
+  .dashboard-home .heading-row { display:flex; align-items:baseline; gap:12px; margin-bottom:20px; padding:0 20px; padding-top:20px; }
+  .dashboard-home .heading-row h2 { margin:0; }
+  .dashboard-home .heading-row .subtitle { margin:0; }
+
+  /* ── Terminal Chat View ── */
+  .chat-view { display:none; flex:1; flex-direction:column; overflow:hidden; }
+  .chat-view.active { display:flex; }
+  .chat-scroll { flex:1; overflow:hidden auto; display:flex; flex-direction:column; }
+  .chat-container { width:100%; max-width:820px; margin:0 auto; display:flex; flex-direction:column; flex:1; }
+  .chat-messages { flex:1; overflow-y:auto; padding:12px 12px 8px; display:flex; flex-direction:column; gap:10px; scroll-behavior:smooth; }
+  .chat-messages::-webkit-scrollbar { width:4px }
+  .chat-messages::-webkit-scrollbar-track { background:transparent }
+  .chat-messages::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px }
+  .msg { max-width:75%; animation:fadeIn 0.25s ease-out; line-height:1.6; border-radius:var(--radius); }
+  @keyframes fadeIn { from { opacity:0; transform:translateY(6px) } to { opacity:1; transform:translateY(0) } }
+  .msg-user { align-self:flex-end; background:linear-gradient(135deg,rgba(212,168,67,0.2),rgba(138,106,32,0.15)); color:#f5e6c8; padding:12px 16px; border-bottom-right-radius:3px; font-size:14px; word-wrap:break-word; border:1px solid rgba(212,168,67,0.1); }
+  .msg-user .label { font-size:10px; text-transform:uppercase; letter-spacing:.8px; opacity:.45; margin-bottom:4px; font-family:var(--font-mono); }
+  .msg-assistant { align-self:flex-start; background:var(--surface); border:1px solid var(--border); padding:14px 16px; border-bottom-left-radius:3px; font-size:13.5px; word-wrap:break-word; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); }
+  .msg-assistant .label { font-size:10px; text-transform:uppercase; letter-spacing:.8px; color:var(--gold); margin-bottom:6px; font-family:var(--font-mono); display:flex; align-items:center; gap:6px; opacity:0.8; }
+  .msg-assistant .label .bar { flex:1; height:1px; background:var(--border); }
+  .msg-assistant p { margin:4px 0 }
+  .msg-assistant code { background:var(--bg); padding:1px 5px; border-radius:3px; font-family:var(--font-mono); font-size:12.5px; color:var(--cyan); }
+  .msg-assistant pre { background:var(--bg); border:1px solid var(--border); border-radius:var(--radius-sm); padding:10px 12px; overflow-x:auto; margin:6px 0; font-family:var(--font-mono); font-size:12px; line-height:1.4; }
+  .msg-assistant-stream { align-self:flex-start; background:var(--surface); border:1px solid var(--border); padding:10px 14px; border-bottom-left-radius:3px; font-size:13px; word-break:break-word; backdrop-filter:blur(8px); max-width:100%; width:100%; white-space:pre-wrap; font-family:var(--font-mono); }
+  .msg-assistant pre .kw { color:#c792ea }
+  .msg-assistant pre .str { color:#c3e88d }
+  .msg-assistant pre .fn { color:#82aaff }
+  .msg-assistant pre .cm { color:#546e7a; font-style:italic }
+  .msg-assistant a { color:var(--gold); text-decoration:none; border-bottom:1px solid var(--gold-dim); }
+  .msg-assistant ul, .msg-assistant ol { padding-left:20px; margin:4px 0 }
+  .msg-assistant li { margin:2px 0 }
+  .tool-call { align-self:flex-start; width:100%; max-width:100%; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm); overflow:hidden; margin:4px 0; font-family:var(--font-mono); font-size:12px; }
+  .tool-call .tc-header { display:flex; align-items:center; gap:8px; padding:8px 12px; cursor:pointer; user-select:none; background:rgba(26,26,40,0.4); border-bottom:1px solid var(--border); transition:background .15s; }
+  .tool-call .tc-header:active { background:var(--border) }
+  .tool-call .tc-header .arrow { transition:transform .2s; font-size:10px; color:var(--text-dim); }
+  .tool-call .tc-header .arrow.open { transform:rotate(90deg) }
+  .tool-call .tc-header .tc-name { color:var(--cyan); font-weight:500; }
+  .tool-call .tc-header .tc-status { margin-left:auto; font-size:10px; padding:1px 7px; border-radius:4px; background:rgba(80,200,120,0.12); color:var(--green); }
+  .tool-call .tc-header .tc-status.error { background:rgba(255,92,92,0.12); color:var(--red) }
+  .tool-call .tc-body { display:none; padding:10px 12px; overflow-x:auto; }
+  .tool-call .tc-body.open { display:block; }
+  .tool-call .tc-body .tc-arg { color:var(--text-dim); margin-bottom:4px; }
+  .tool-call .tc-body .tc-arg strong { color:var(--gold); font-weight:500; }
+  .tool-call .tc-body .tc-result { margin-top:6px; padding-top:6px; border-top:1px solid var(--border); white-space:pre-wrap; color:var(--green); max-height:200px; overflow-y:auto; }
+  .thinking { align-self:flex-start; width:100%; background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-sm); overflow:hidden; margin:4px 0; font-family:var(--font-mono); font-size:12px; }
+  .thinking .th-header { display:flex; align-items:center; gap:8px; padding:8px 12px; cursor:pointer; user-select:none; background:rgba(26,26,40,0.4); border-bottom:1px solid var(--border); }
+  .thinking .th-header .arrow { transition:transform .2s; font-size:10px; color:var(--text-dim); }
+  .thinking .th-header .arrow.open { transform:rotate(90deg) }
+  .thinking .th-header .th-label { color:var(--text-dim); font-weight:500; }
+  .thinking .th-body { display:none; padding:8px 10px; color:var(--text-dim); white-space:pre-wrap; }
+  .thinking .th-body.open { display:block; }
+  .typing { align-self:flex-start; display:flex; align-items:center; gap:5px; padding:12px 16px; background:var(--surface2); border:1px solid var(--border); border-radius:var(--radius); border-bottom-left-radius:3px; }
+  .typing .bounce { width:6px; height:6px; border-radius:50%; background:var(--gold-dim); animation:bounce 1.2s ease-in-out infinite }
+  .typing .bounce:nth-child(2) { animation-delay:.2s }
+  .typing .bounce:nth-child(3) { animation-delay:.4s }
+  @keyframes bounce { 0%,60%,100% { transform:translateY(0); opacity:.4 } 30% { transform:translateY(-6px); opacity:1 } }
+  .input-area { background:rgba(19,19,30,0.6); border-top:1px solid var(--border); padding:10px 16px 18px; flex-shrink:0; backdrop-filter:blur(12px); -webkit-backdrop-filter:blur(12px); }
+  .input-wrap { display:flex; gap:10px; align-items:flex-end; background:rgba(26,26,40,0.5); border:1px solid var(--border); border-radius:var(--radius); padding:4px 4px 4px 12px; transition:border-color .2s,box-shadow .2s; }
+  .input-wrap:focus-within { border-color:rgba(212,168,67,0.3); box-shadow:0 0 0 1px rgba(212,168,67,0.08); }
+  .input-wrap textarea { flex:1; background:transparent; border:none; outline:none; color:var(--text); font-family:var(--font-mono); font-size:13px; resize:none; padding:6px 4px; min-height:36px; max-height:120px; line-height:1.5; }
+  .input-wrap textarea::placeholder { color:var(--text-dim); opacity:0.5; }
+  .input-wrap button { width:36px; height:36px; border-radius:var(--radius-sm); border:none; background:linear-gradient(135deg,var(--gold),#c49a30); color:var(--bg); font-size:17px; cursor:pointer; flex-shrink:0; display:flex; align-items:center; justify-content:center; transition:opacity .2s,transform .1s; }
+  .input-wrap button:active { opacity:.7; transform:scale(0.95); }
+  .input-wrap button:disabled { opacity:.3; cursor:default; transform:none; }
+  .input-wrap .mic-btn { background:linear-gradient(135deg,#555,#444); font-size:16px; }
+  .input-wrap .mic-btn.recording { background:linear-gradient(135deg,#e94560,#c03850); animation:mic-pulse 1s ease-in-out infinite; box-shadow:0 0 8px rgba(233,69,96,0.4); }
+  @keyframes mic-pulse { 0%,100% { box-shadow:0 0 8px rgba(233,69,96,0.4) } 50% { box-shadow:0 0 16px rgba(233,69,96,0.7) } }
+  .welcome { text-align:center; padding:30px 16px; color:var(--text-dim); margin-top:auto; }
+  .welcome .logo { font-size:26px; color:var(--gold); font-family:var(--font-mono); margin-bottom:6px; letter-spacing:-1px; opacity:0.7; }
+  .welcome p { font-size:13px; opacity:0.5; }
+  .sidebar-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.5); z-index:9; }
+  .sidebar-overlay.open { display:block; }
+
+  @media (max-width:680px) {
+    .sidebar { position:fixed; top:0; left:0; bottom:0; z-index:10; transform:translateX(-100%); }
+    .sidebar.open { transform:translateX(0); }
+    .main-header .menu-btn { display:block; }
+    .chat-messages { padding:8px 8px 4px; gap:8px }
+    .msg-user { padding:8px 12px; font-size:13px }
+    .msg-assistant { padding:10px 12px; font-size:13px }
+    .msg { max-width:98%; font-size:13px }
+    .gauges { grid-template-columns:repeat(auto-fill,minmax(180px,1fr)); }
+  }
+  @media (min-width:681px) {
+    .msg { max-width:75%; font-size:14px }
+    .msg-user { font-size:14.5px }
+    .msg-assistant { font-size:14px; line-height:1.6 }
+    .chat-messages { padding:16px 20px 10px; gap:12px }
+    .input-area { padding:12px 20px 24px }
+    .input-wrap { padding:6px 8px }
+    .input-wrap textarea { font-size:14px; min-height:44px; padding:8px 10px }
+    .input-wrap button { width:40px; height:40px; font-size:20px }
+    .gauges { grid-template-columns:repeat(4,1fr); }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="dot"></div>
+      <h1>hermes</h1>
+    </div>
+    <nav>
+      <div class="nav-item active" data-view="chat" onclick="navigate('chat')">
+        <span class="icon">⎔</span> Terminal
+      </div>
+      
+      <div class="nav-item" data-view="system" onclick="navigate('system')">
+        <span class="icon">⚙</span> System
+      </div>
+    </nav>
+    <div class="sidebar-footer">v0.1</div>
+  </aside>
+  <div class="sidebar-overlay" id="overlay" onclick="closeSidebar()"></div>
+  <div class="main">
+    <div class="main-header">
+      <button class="menu-btn" onclick="toggleSidebar()">☰</button>
+      <div class="view-title">Hermes <span>Terminal</span></div>
+      <div class="model-tag"><span class="conn-dot" id="connIndicator"></span> <span id="modelName">deepseek/deepseek-v4-flash</span></div>
+    </div>
+    <div class="content">
+      <!-- ── Terminal Chat View ── -->
+      <div class="chat-view view active" id="view-chat">
+        <div class="chat-scroll">
+          <div class="chat-container">
+            <div class="heading-row" style="padding:24px 28px 0">
+              <h2>Terminal</h2>
+              <p class="subtitle">Chat with Hermes Agent</p>
+            </div>
+            <div class="chat-messages" id="messages">
+              <div class="welcome" id="welcome">
+                <div class="logo">⎔ hermes</div>
+                <p>Terminal session live. Type a message to begin.</p>
+              </div>
+            </div>
+            <div class="input-area">
+              <div class="input-wrap">
+                <textarea id="input" rows="1" placeholder="Type a message..." enterkeyhint="send"></textarea>
+                <button id="micBtn" class="mic-btn" aria-label="Voice input" onclick="toggleMic()">🎤</button>
+                <button id="sendBtn" aria-label="Send">⏎</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- ── System View ── -->
+      <div class="dashboard-home view" id="view-system" style="display:none">
+        <div class="heading-row" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap">
+          <div>
+            <h2>System</h2>
+            <p class="subtitle" id="sysSubtitle">Live resource monitor</p>
+          </div>
+        </div>
+        <div id="sysContent" style="padding:0 20px 20px;display:grid;grid-template-columns:1fr;gap:14px">
+          <div id="sysGauges" class="gauges" style="display:grid;gap:14px"></div>
+          <div id="sysProcs" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 20px;backdrop-filter:blur(8px)"></div>
+          <div id="sysInfra"></div>
+        </div>
+      </div>
+    </div><!-- /content -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<script>
+// ── Navigation ──
+function navigate(view) {
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.querySelector(`.nav-item[data-view="${view}"]`)?.classList.add('active');
+  const titles = { chat: 'Terminal', system: 'System' };
+  document.querySelector('.view-title span').textContent = titles[view] || view;
+  document.querySelectorAll('.view').forEach(v => v.style.display = 'none');
+  const target = document.getElementById(`view-${view}`);
+  if (target) {
+    if (view === 'chat') { target.classList.add('active'); target.style.display = 'flex'; }
+    else { target.style.display = 'block'; }
+  }
+  closeSidebar();
+  if (view === 'system') loadSystem();
+}
+
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('overlay').classList.toggle('open');
+}
+function closeSidebar() {
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('overlay').classList.remove('open');
+}
+
+// ── Chat State ──
+const MSG_LIST = document.getElementById('messages');
+const INPUT = document.getElementById('input');
+const SEND_BTN = document.getElementById('sendBtn');
+const WELCOME = document.getElementById('welcome');
+const CONN_INDICATOR = document.getElementById('connIndicator');
+let ws = null;
+let wsReconnectTimer = null;
+
+function scrollBottom() {
+  requestAnimationFrame(() => { MSG_LIST.scrollTop = MSG_LIST.scrollHeight; });
+}
+
+function escapeHtml(str) {
+  const d = document.createElement('div');
+  d.textContent = str;
+  return d.innerHTML;
+}
+
+// ── ANSI stripping ──
+function stripAnsi(str) {
+  return str.replace(/\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, '');
+}
+
+// ── WebSocket ──
+function connectWs() {
+  if (ws && ws.readyState === WebSocket.OPEN) return;
+
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${location.host}/ws`;
+
+  if (CONN_INDICATOR) CONN_INDICATOR.className = 'conn-connecting';
+
+  ws = new WebSocket(wsUrl);
+
+  ws.onopen = () => {
+    if (CONN_INDICATOR) CONN_INDICATOR.className = 'conn-connected';
+    if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+    // Enable input
+    SEND_BTN.disabled = false;
+    INPUT.disabled = false;
+    INPUT.focus();
+  };
+
+  ws.onmessage = (event) => {
+    WELCOME.style.display = 'none';
+
+    // Parse JSON messages from the server
+    let data;
+    try { data = JSON.parse(event.data); } catch (_) { return; }
+
+    if (data.type === 'thinking') {
+      // Show typing indicator
+      const existing = document.getElementById('typing-indicator');
+      if (existing) return;  // already showing
+      const d = document.createElement('div');
+      d.id = 'typing-indicator';
+      d.className = 'typing';
+      d.innerHTML = '<div class="bounce"></div><div class="bounce"></div><div class="bounce"></div>';
+      MSG_LIST.appendChild(d);
+      scrollBottom();
+      return;
+    }
+
+    if (data.type === 'response') {
+      // Remove typing indicator
+      const ti = document.getElementById('typing-indicator');
+      if (ti) ti.remove();
+
+      // Render response text
+      const clean = stripAnsi(data.content || '');
+      if (!clean.trim()) return;
+
+      const lastMsg = MSG_LIST.lastElementChild;
+      if (lastMsg && lastMsg.classList.contains('msg-assistant-stream')) {
+        lastMsg.textContent += clean;
+      } else {
+        const d = document.createElement('div');
+        d.className = 'msg msg-assistant msg-assistant-stream';
+        d.textContent = clean;
+        MSG_LIST.appendChild(d);
+      }
+      scrollBottom();
+    }
+  };
+
+  ws.onclose = () => {
+    if (CONN_INDICATOR) CONN_INDICATOR.className = 'conn-disconnected';
+    SEND_BTN.disabled = true;
+    INPUT.disabled = true;
+    // Reconnect after 3s
+    if (!wsReconnectTimer) {
+      wsReconnectTimer = setTimeout(() => { wsReconnectTimer = null; connectWs(); }, 3000);
+    }
+  };
+
+  ws.onerror = () => {
+    ws.close();
+  };
+}
+
+function sendWsMessage(text) {
+  if (!text.trim() || !ws || ws.readyState !== WebSocket.OPEN) return;
+  const msg = text.trim();
+  INPUT.value = '';
+  INPUT.style.height = 'auto';
+
+  // Render user message
+  WELCOME.style.display = 'none';
+  const d = document.createElement('div');
+  d.className = 'msg msg-user';
+  d.innerHTML = `<div class="label">You</div>${escapeHtml(msg)}`;
+  MSG_LIST.appendChild(d);
+  scrollBottom();
+
+  ws.send(msg);
+}
+
+// ── Event binding ──
+INPUT.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendWsMessage(INPUT.value); }
+});
+SEND_BTN.addEventListener('click', () => sendWsMessage(INPUT.value));
+INPUT.addEventListener('input', () => {
+  INPUT.style.height = 'auto';
+  INPUT.style.height = Math.min(INPUT.scrollHeight, 120) + 'px';
+});
+
+// ── Voice input ──
+let recognition = null, isRecording = false;
+const MIC_BTN = document.getElementById('micBtn');
+function toggleMic() {
+  if (isRecording) { stopMic(); return; }
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { appendWsText('**Voice not supported** — try Chrome or Edge.'); return; }
+  if (!recognition) {
+    recognition = new SR();
+    recognition.lang = 'en-US';
+    recognition.interimResults = false;
+    recognition.continuous = false;
+    recognition.onresult = e => {
+      const t = e.results[0][0].transcript;
+      INPUT.value = t;
+      INPUT.style.height = 'auto';
+      INPUT.style.height = Math.min(INPUT.scrollHeight, 120) + 'px';
+      stopMic();
+      sendWsMessage(t);
+    };
+    recognition.onerror = e => {
+      console.warn('mic:', e.error);
+      stopMic();
+      if (e.error === 'not-allowed') appendWsText('**Mic permission denied**');
+    };
+    recognition.onend = () => { if (isRecording) stopMic(); };
+  }
+  try {
+    recognition.start();
+    isRecording = true;
+    MIC_BTN.classList.add('recording');
+    MIC_BTN.textContent = '⏹';
+  } catch (_) {}
+}
+function stopMic() {
+  isRecording = false;
+  MIC_BTN.classList.remove('recording');
+  MIC_BTN.textContent = '🎤';
+  try { if (recognition) recognition.stop(); } catch (_) {}
+}
+
+function appendWsText(text) {
+  const d = document.createElement('div');
+  d.className = 'msg msg-assistant msg-assistant-stream';
+  d.textContent = text;
+  MSG_LIST.appendChild(d);
+  scrollBottom();
+}
+
+// ── System monitor ──
+let sysTimer = null;
+function bar(pct, color) {
+  const c = Math.min(Math.max(pct, 0), 100);
+  return `<div style="background:var(--surface2);border-radius:4px;height:8px;margin:6px 0;overflow:hidden"><div style="width:${c}%;height:100%;background:${color};border-radius:4px;transition:width .5s"></div></div>`;
+}
+async function loadSystem() {
+  if (sysTimer) clearInterval(sysTimer);
+  const load = async () => {
+    try {
+      const res = await fetch('/api/system'); const d = await res.json();
+      const memPct = d.memory?.pct || 0; const memColor = memPct > 80 ? 'var(--red)' : memPct > 60 ? 'var(--gold)' : 'var(--green)';
+      const diskPct = parseInt(d.disk?.pct || '0'); const diskColor = diskPct > 80 ? 'var(--red)' : diskPct > 60 ? 'var(--gold)' : 'var(--green)';
+      const loadAvg = parseFloat(d.cpu?.load_1m || '0'); const loadColor = loadAvg > 1.5 ? 'var(--red)' : loadAvg > 0.8 ? 'var(--gold)' : 'var(--green)';
+      const uptime = d.uptime_secs || 0;
+      const ud = Math.floor(uptime / 86400);
+      const uh = Math.floor((uptime % 86400) / 3600);
+      const um = Math.floor((uptime % 3600) / 60);
+      let uptimeStr = '';
+      if (ud > 0) uptimeStr += `${ud}d `;
+      uptimeStr += `${uh}h ${um}m`;
+      document.getElementById('sysGauges').innerHTML = `
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px 10px;backdrop-filter:blur(8px);border-top:2px solid ${loadColor};position:relative"><div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-bright);font-family:var(--font-mono);margin-bottom:1px;opacity:0.8">CPU</div><div style="font-size:22px;font-weight:700;font-family:var(--font-mono);color:${loadColor};line-height:1.1">${d.cpu?.load_1m || '?'}</div><div style="margin:4px 0 3px">${bar(loadAvg * 20, loadColor)}</div><div style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono)">${d.cpu?.cores || '?'} cores</div></div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px 10px;backdrop-filter:blur(8px);border-top:2px solid ${memColor};position:relative"><div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-bright);font-family:var(--font-mono);margin-bottom:1px;opacity:0.8">RAM</div><div style="font-size:22px;font-weight:700;font-family:var(--font-mono);color:${memColor};line-height:1.1">${memPct}%</div><div style="margin:4px 0 3px">${bar(memPct, memColor)}</div><div style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono)">${d.memory?.used_gb || '?'}G / ${d.memory?.total_gb || '?'}G</div></div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px 10px;backdrop-filter:blur(8px);border-top:2px solid ${diskColor};position:relative"><div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-bright);font-family:var(--font-mono);margin-bottom:1px;opacity:0.8">DISK</div><div style="font-size:22px;font-weight:700;font-family:var(--font-mono);color:${diskColor};line-height:1.1">${d.disk?.pct || '?'}</div><div style="margin:4px 0 3px">${bar(diskPct, diskColor)}</div><div style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono)">${d.disk?.used || '?'} / ${d.disk?.total || '?'}</div></div>
+        <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:12px 16px 10px;backdrop-filter:blur(8px);border-top:2px solid var(--gold);position:relative"><div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:1.2px;color:var(--gold);font-family:var(--font-mono);margin-bottom:1px">UPTIME</div><div style="font-size:22px;font-weight:700;font-family:var(--font-mono);color:var(--text-bright);line-height:1.1">${uptimeStr}</div><div style="margin-top:4px"></div><div style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono)">since last restart</div></div>`;
+      // Processes
+      let ph = '<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1px;color:var(--text-dim);font-family:var(--font-mono);margin-bottom:8px">Top Processes</div>';
+      if (d.processes && d.processes.length) {
+        ph += '<div style="font-size:13px;font-family:var(--font-mono)">';
+        for (const p of d.processes) { const rss = Math.round(parseInt(p.rss || '0') / 1024); ph += `<div style="display:flex;gap:6px;padding:4px 0;border-bottom:1px solid var(--border-light)"><span style="color:${p.mem > 3 ? 'var(--gold)' : 'var(--text-dim)'};width:44px;font-weight:500">${p.mem}%</span><span style="color:var(--text-dim);width:55px">${rss}M</span><span style="color:var(--text);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escapeHtml(p.cmd)}</span></div>`; }
+        ph += '</div>';
+      } else { ph += '<div style="color:var(--text-dim);font-size:12px;padding:12px 0;text-align:center">No process data</div>'; }
+      document.getElementById('sysProcs').innerHTML = ph;
+      // Server Infrastructure
+      const infra = d.server_infra;
+      let infraHtml = '';
+
+      // Nginx header bar
+      const nx = infra?.nginx;
+      if (nx && nx.running) {
+        const nxUp = nx.uptime_secs ? (h => `${Math.floor(h/3600)}h ${Math.floor((h%3600)/60)}m`)(nx.uptime_secs) : '?';
+        infraHtml += `
+          <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 18px;margin-bottom:12px;backdrop-filter:blur(8px)">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+              <span style="color:var(--green);font-size:14px">●</span>
+              <span style="color:var(--text-bright);font-weight:600;font-family:var(--font-mono);font-size:14px">nginx</span>
+              <span style="color:var(--text-dim);font-family:var(--font-mono);font-size:12px">v${nx.version || '?'}</span>
+              <span style="margin-left:auto;color:var(--text-dim);font-family:var(--font-mono);font-size:12px">pid ${nx.pid} · up ${nxUp}</span>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;padding:8px 10px;background:var(--surface2);border-radius:var(--radius-sm);font-size:13px;font-family:var(--font-mono);flex-wrap:wrap">
+              <span style="color:var(--gold);font-weight:600">Routes</span>
+              <span style="color:var(--text-dim)">→</span>
+              <span style="color:var(--cyan)">/reasonix</span>
+              <span style="color:var(--text-dim)">·</span>
+              <span style="color:var(--cyan)">/hermes</span>
+              <span style="color:var(--text-dim)">·</span>
+              <span style="color:var(--cyan)">/</span>
+              <span style="color:var(--text-dim)">·</span>
+              <span style="color:var(--cyan)">/_auth</span>
+            </div>
+          </div>`;
+      }
+
+      // Server cards — compact, path inline
+      const servers = infra?.servers || [];
+      if (servers.length) {
+        infraHtml += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:12px">';
+        for (const s of servers) {
+          const stColor = s.healthy ? 'var(--green)' : (s.listening ? 'var(--gold)' : 'var(--red)');
+          const stLabel = s.healthy ? 'UP' : (s.listening ? 'LISTEN' : 'DOWN');
+          const stDot = s.healthy ? '●' : (s.listening ? '◷' : '●');
+          const routeBadge = s.route === '/' ? '/' : s.route;
+          const svcPath = s.path ? escapeHtml(s.path) : '';
+          infraHtml += `
+            <div style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;backdrop-filter:blur(8px);position:relative;overflow:hidden">
+              <div style="position:absolute;top:0;right:0;padding:3px 10px;font-size:11px;font-family:var(--font-mono);border-radius:0 var(--radius-sm) 0 var(--radius-sm);background:${stColor};color:var(--bg);font-weight:700;letter-spacing:.5px">${stLabel}</div>
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                <span style="color:${stColor};font-size:14px">${stDot}</span>
+                <span style="color:var(--text-bright);font-weight:700;font-family:var(--font-mono);font-size:15px">${escapeHtml(s.name)}</span>
+                <span style="margin-left:auto;color:var(--text-dim);font-size:12px;font-family:var(--font-mono)">:${s.port}</span>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px;font-size:13px;font-family:var(--font-mono)">
+                <span style="color:var(--cyan);font-weight:500">${escapeHtml(routeBadge)}</span>
+                <span style="color:var(--text-dim)">·</span>
+                <span style="color:var(--text)">${escapeHtml(s.process || '-')}</span>
+                <span style="color:var(--text-dim)">·</span>
+                <span style="color:var(--text-dim)">pid ${s.pid || '-'}</span>
+              </div>
+              ${svcPath ? `<div style="font-size:11px;color:var(--text-dim);font-family:var(--font-mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-top:6px;border-top:1px solid var(--border-light)"><span style="color:var(--gold-dim)">▸</span> ${svcPath}</div>` : ''}
+              <div style="margin-top:4px;font-size:12px;color:var(--text-dim);opacity:0.7">${escapeHtml(s.desc)}</div>
+            </div>`;
+        }
+        infraHtml += '</div>';
+      } else {
+        infraHtml += '<div style="color:var(--text-dim);font-size:12px;padding:12px 0;text-align:center;font-family:var(--font-mono)">No server data</div>';
+      }
+      document.getElementById('sysInfra').innerHTML = infraHtml;
+    } catch (_) {}
+  };
+  await load(); sysTimer = setInterval(load, 5000);
+}
+
+// ── Boot ──
+connectWs();
+</script>
+</body>
+</html>

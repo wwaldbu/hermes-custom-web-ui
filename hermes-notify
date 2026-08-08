@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Broadcast a notification to the Hermes web UI.
+
+Usage:
+  hermes-notify --title "Job done" --body "Processing complete" [--type info|success|error|cron] [--source my-job]
+
+This posts to the web UI's /api/notify endpoint so the Notifications
+pane displays it. Designed to be called from cron job scripts.
+"""
+
+import argparse
+import json
+import os
+import urllib.request
+import urllib.error
+from datetime import datetime, timezone
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Send notification to Hermes web UI")
+    parser.add_argument("--title", required=True, help="Notification title")
+    parser.add_argument("--body", default="", help="Notification body text")
+    parser.add_argument("--type", default="info", choices=["info", "success", "error", "cron"])
+    parser.add_argument("--source", default="cron", help="Source identifier (default: cron)")
+    parser.add_argument("--status", default="", help="Status string (e.g. completed, failed)")
+    parser.add_argument("--url", default="http://127.0.0.1:8081/api/notify",
+                        help="Web UI notify endpoint")
+    args = parser.parse_args()
+
+    payload = json.dumps({
+        "type": args.type,
+        "source": args.source,
+        "title": args.title,
+        "body": args.body,
+        "status": args.status,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }).encode()
+
+    try:
+        req = urllib.request.Request(args.url, data=payload,
+                                     headers={"Content-Type": "application/json"})
+        resp = urllib.request.urlopen(req, timeout=10)
+        result = json.loads(resp.read())
+        if result.get("ok"):
+            print(f"Notification sent: {args.title}")
+        else:
+            print(f"Notify error: {result}")
+    except Exception as e:
+        print(f"Notify failed: {e}", file=sys.stderr)
+
+
+if __name__ == "__main__":
+    import sys
+    main()
