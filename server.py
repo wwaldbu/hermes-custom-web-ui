@@ -14,6 +14,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import urllib.request
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 
@@ -326,6 +327,9 @@ class Handler(SimpleHTTPRequestHandler):
         elif path == "/api/system":
             self._send_json(self._get_system_data())
 
+        elif path.startswith("/pages"):
+            self._proxy_pages(path)
+
         else:
             self._serve_static(path)
 
@@ -356,6 +360,25 @@ class Handler(SimpleHTTPRequestHandler):
             return {"conversation_id": sid, "title": title or "", "messages": msgs}
         except Exception:
             return None
+
+    def _proxy_pages(self, path):
+        """Proxy /pages/* requests to the pages server on port 3000."""
+        try:
+            # self.path includes the query string, forward as-is
+            target = f"http://127.0.0.1:3000{self.path}"
+            req = urllib.request.Request(target)
+            resp = urllib.request.urlopen(req, timeout=10)
+            data = resp.read()
+            ctype = resp.headers.get("Content-Type", "text/html; charset=utf-8")
+            self.send_response(resp.status)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except urllib.request.HTTPError as e:
+            self.send_error(e.code)
+        except IOError:
+            self.send_error(502, "Pages proxy error")
 
     def _get_system_data(self):
         cpu_lines = []
