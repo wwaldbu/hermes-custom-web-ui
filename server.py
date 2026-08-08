@@ -333,6 +333,28 @@ class Handler(SimpleHTTPRequestHandler):
         else:
             self._serve_static(path)
 
+    def do_DELETE(self):
+        """Proxy DELETE /api/pages/* to the pages server on port 3000."""
+        path = self.path.rstrip("/")
+        if path.startswith("/api/pages/"):
+            try:
+                target = f"http://127.0.0.1:3000{self.path}"
+                req = urllib.request.Request(target, method="DELETE")
+                resp = urllib.request.urlopen(req, timeout=10)
+                data = resp.read()
+                ctype = resp.headers.get("Content-Type", "application/json")
+                self.send_response(resp.status)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+            except urllib.request.HTTPError as e:
+                self.send_error(e.code)
+            except IOError:
+                self.send_error(502, "Pages proxy error")
+        else:
+            self.send_error(404)
+
     def _load_recent_session(self):
         db = HERMES_HOME / "state.db"
         if not db.exists():
